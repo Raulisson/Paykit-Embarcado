@@ -1,0 +1,331 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <title>Paykit Totem — Teste</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0
+        }
+
+        body {
+            font-family: 'Segoe UI',sans-serif;
+            background: #0f172a;
+            color: #f1f5f9;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 32px 20px;
+            gap: 20px
+        }
+
+        h1 {
+            color: #38bdf8;
+            font-size: 1.5rem
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 24px;
+            width: 100%;
+            max-width: 500px
+        }
+
+        h2 {
+            color: #94a3b8;
+            font-size: .9rem;
+            margin-bottom: 12px
+        }
+
+        .row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #0f172a;
+            font-size: .9rem
+        }
+
+            .row span:first-child {
+                color: #94a3b8
+            }
+
+        .valor {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: #4ade80;
+            text-align: center;
+            margin: 16px 0
+        }
+
+        .btns {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center
+        }
+
+        button {
+            padding: 14px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            min-width: 150px;
+            transition: opacity .15s
+        }
+
+            button:disabled {
+                opacity: .4;
+                cursor: not-allowed
+            }
+
+            button:active {
+                transform: scale(.97)
+            }
+
+        .bcred {
+            background: #0ea5e9;
+            color: #fff
+        }
+
+        .bdeb {
+            background: #8b5cf6;
+            color: #fff
+        }
+
+        .bsts {
+            background: #334155;
+            color: #94a3b8;
+            font-size: .85rem;
+            min-width: auto;
+            padding: 10px 16px
+        }
+
+        .status-box {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 16px;
+            width: 100%;
+            max-width: 500px
+        }
+
+        #statusTxt {
+            font-size: 1.05rem;
+            font-weight: 600;
+            min-height: 1.4em;
+            margin-bottom: 8px
+        }
+
+        #log {
+            background: #020617;
+            border-radius: 6px;
+            padding: 10px;
+            font-family: 'Consolas',monospace;
+            font-size: .75rem;
+            color: #94a3b8;
+            height: 220px;
+            overflow-y: auto;
+            white-space: pre-wrap
+        }
+
+        #comprovante {
+            display: none;
+            background: #fff;
+            color: #111;
+            font-family: 'Courier New',monospace;
+            font-size: .72rem;
+            padding: 14px;
+            border-radius: 8px;
+            white-space: pre;
+            max-width: 340px;
+            width: 100%;
+            border: 2px dashed #94a3b8
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 3px;
+            font-size: .72rem;
+            font-weight: 700;
+            margin-right: 5px
+        }
+
+        .t-ok {
+            background: #166534;
+            color: #4ade80
+        }
+
+        .t-er {
+            background: #7f1d1d;
+            color: #f87171
+        }
+
+        .t-pr {
+            background: #1e3a5f;
+            color: #38bdf8
+        }
+
+        .t-pk {
+            background: #2d1b69;
+            color: #c4b5fd
+        }
+
+        .t-js {
+            background: #1c3340;
+            color: #67e8f9
+        }
+        .bpix { 
+            background: #10b981; 
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🖥️ Paykit Totem — Teste</h1>
+
+    <!-- Pedido fixo (substitua por dinâmico depois) -->
+    <div class="card">
+        <h2>Pedido de Teste</h2>
+        <div class="row"><span>Descrição</span><span id="desc">—</span></div>
+        <div class="row"><span>Cupom</span><span>Próximo da sessão</span></div>
+        <div class="valor" id="val">R$ —</div>
+        <div class="btns" style="margin-bottom:16px">
+            <button class="bsts" onclick="alterarValor(1.5)">R$ 1,50</button>
+            <button class="bsts" onclick="alterarValor(85.9)">R$ 85,90</button>
+        </div>
+        <div class="btns">
+            <button class="bcred" onclick="pagar('credito')"> Crédito</button>
+            <button class="bdeb" onclick="pagar('debito')"> Débito</button>
+            <button class="bpix" onclick="pagar('pix')"> PIX</button>
+            <button class="bsts" onclick="pagar('status')"> Status</button>
+        </div>
+    </div>
+
+    <!-- Status + log -->
+    <div class="status-box">
+        <div id="statusTxt">Aguardando...</div>
+        <div id="log"></div>
+    </div>
+
+    <div id="qrcodeBox" style="display:none; flex-direction:column; align-items:center; gap:12px">
+        <div style="color:#94a3b8; font-size:.9rem">Escaneie com o app do banco</div>
+        <canvas id="qrcodeCanvas" width="220" height="220"
+                style="background:#fff; border-radius:8px; padding:10px"></canvas>
+        <div style="color:#4ade80; font-size:.85rem">⏳ Aguardando pagamento...</div>
+    </div>
+
+    <!-- Comprovante -->
+    <div id="comprovante"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+    const PEDIDO = {
+    descricao: 'Combo de Lanche - Teste',
+    valor: 5.9,   // ← ALTERE AQUI
+    };
+
+    // ── Inicialização ────────────────────────────────────────
+    document.getElementById('desc').textContent = PEDIDO.descricao;
+    document.getElementById('val').textContent  =
+    'R$ ' + PEDIDO.valor.toFixed(2).replace('.', ',');
+
+    function alterarValor(novoValor) {
+        PEDIDO.valor = novoValor;
+
+        document.getElementById('val').textContent =
+            'R$ ' + PEDIDO.valor.toFixed(2).replace('.', ',');
+
+        addLog('SYS', 't-js', 'Valor alterado para R$ ' + PEDIDO.valor.toFixed(2));
+    }
+
+    // ── Helpers ──────────────────────────────────────────────
+    function addLog(tag, cls, txt) {
+    const b = document.getElementById('log');
+    const d = document.createElement('div');
+    d.innerHTML = `<span class="tag ${cls}">${tag}</span>${txt}`;
+    b.appendChild(d);
+    b.scrollTop = b.scrollHeight;
+    }
+    function setStatus(txt, cor) {
+    const el = document.getElementById('statusTxt');
+    el.textContent = txt;
+    el.style.color = cor || '#f1f5f9';
+    }
+    function setBtns(dis) {
+    document.querySelectorAll('button').forEach(b => b.disabled = dis);
+    }
+
+    // ── Envio ao C# ─────────────────────────────────────────
+    function pagar(acao) {
+        document.getElementById('qrcodeBox').style.display = 'none';
+        if (acao !== 'status') {
+            setBtns(true);
+            document.getElementById('comprovante').style.display = 'none';
+            setStatus(`⏳ Iniciando ${acao}...`, '#38bdf8');
+        }
+        const payload = JSON.stringify({ acao, valor: PEDIDO.valor, descricao: PEDIDO.descricao });
+        addLog('JS→C#', 't-js', payload);
+        window.enviarAoPaykit(payload);
+    }
+
+    // ── Resultado final vindo do C# ──────────────────────────
+    window._resultadoHandler = function(d) {
+    switch (d.status) {
+        case 'aprovado':
+        setStatus('✅ ' + d.mensagem, '#4ade80');
+        addLog('APROVADO', 't-ok', d.mensagem);
+        setBtns(false);
+        break;
+        case 'recusado':
+        setStatus('❌ ' + d.mensagem, '#f87171');
+        addLog('RECUSADO', 't-er', d.mensagem);
+        setBtns(false);
+        break;
+        case 'processando':
+        setStatus('⏳ ' + d.mensagem, '#38bdf8');
+        addLog('PROCESSO', 't-pr', d.mensagem);
+        break;
+        case 'erro':
+        setStatus('⚠️ ' + d.mensagem, '#fb923c');
+        addLog('ERRO', 't-er', d.mensagem);
+        setBtns(false);
+        break;
+        default:
+        addLog('INFO', 't-js', d.mensagem);
+    }
+    };
+
+    // ── Comprovante ──────────────────────────────────────────
+    window._comprovanteHandler = function(txt) {
+    const el = document.getElementById('comprovante');
+    el.style.display = 'block';
+    el.textContent   = txt || '(sem comprovante)';
+    };
+
+    // ── Eventos do Paykit em tempo real ──────────────────────
+    window._paykitHandler = function(tipo, dados) {
+    switch (tipo) {
+        case 'display':   setStatus('📟 ' + dados, '#e2e8f0'); addLog('PAYKIT', 't-pk', dados); break;
+        case 'mensagem':  addLog('PAYKIT', 't-pk', dados); break;
+        case 'erro':      addLog('ERRO',   't-er', dados); break;
+        case 'alerta':    addLog('ALERTA', 't-pk', dados); break;
+        case 'confirmacao': addLog('CONFIRM', 't-pk', 'Auto: ' + dados); break;
+        case 'comprovante': window._comprovanteHandler(dados); break;
+        case 'qrcode':    addLog('QRCODE', 't-pk', dados); break;
+        default:          addLog(tipo,     't-pk', dados);
+    }
+    };
+
+    addLog('SYS', 't-js', 'Página pronta.');
+</script>
+</body>
+</html>
