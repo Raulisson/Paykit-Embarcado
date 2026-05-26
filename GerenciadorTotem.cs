@@ -1,6 +1,6 @@
 ﻿using System;
 using System.Windows.Forms;
-
+using System.Diagnostics;
 namespace PaykitTotem.Paykit;
 
 public sealed class GerenciadorTotem : IGerenciadorSemTelas
@@ -60,33 +60,49 @@ public sealed class GerenciadorTotem : IGerenciadorSemTelas
         int c = VerificaCancelado(nameof(SolicitaConfirmacao));
         if (c != 0) return c;
 
-        Console.WriteLine($"[PAYKIT confirmacao] {m} → auto-confirm");
+        Debug.WriteLine($"[PAYKIT confirmacao] {m} → auto-confirm");
         Send("confirmacao", m);
         return 0;
     }
 
+    private volatile bool _cancelado = false;
     private int VerificaCancelado(string origem)
     {
-        if (_cancelado)
+        if (!_cancelado) return 0;
+
+        Debug.WriteLine($"[PAYKIT CANCELADO INTERNO] {origem}");
+
+        if (origem == nameof(SolicitaConfirmacao))
         {
-            Console.WriteLine($"[PAYKIT CANCELADO] {origem}");
-            return 1;
+            _cancelado = false;
+            return 0;
         }
 
+        return -1;
+    }
+
+
+
+    public void MarcarCancelado()
+    {
+        _cancelado = true;
+        Debug.WriteLine("[GerenciadorTotem] Operação marcada como cancelada.");
+    }
+
+    public void LimparCancelamento() => _cancelado = false;
+    public int OperacaoCancelada()
+    {
+        return _cancelado ? 1 : 0;
+    }
+
+    public int SetaOperacaoCancelada(bool cancelada)
+    {
+        // IMPORTANTE: A DLL usa isso para limpar o estado de cancelamento 
+        // entre uma tentativa e outra do fluxo interno dela.
+        _cancelado = cancelada;
+        Debug.WriteLine($"[GerenciadorTotem] SetaOperacaoCancelada mudou para: {cancelada}");
         return 0;
     }
-
-    public void ResetarCancelamento()
-    {
-        _cancelado = false;
-    }
-
-  
-    private volatile bool _cancelado = false;
-    public void MarcarCancelado() => _cancelado = true;
-
-    public int OperacaoCancelada() => _cancelado ? 1 : 0;
-    public int SetaOperacaoCancelada(bool v) { _cancelado = v; return 0; }
     public void ProcessaMensagens()
     {
         System.Threading.Thread.Sleep(1);
@@ -123,51 +139,42 @@ public sealed class GerenciadorTotem : IGerenciadorSemTelas
     //}
     public int EntraCartao(string l, ref string s)
     {
+        Debug.WriteLine($"[PAYKIT EntraCartao] {l}");
         int c = VerificaCancelado(nameof(EntraCartao));
-        if (c != 0) return c;
+        if (c != 0) return c; // Retorna -1 se cancelado
 
-        Console.WriteLine($"[PAYKIT EntraCartao] {l}");
         return 0;
     }
 
     public int EntraDataValidade(string l, ref string s)
     {
-        int c = VerificaCancelado(nameof(EntraDataValidade));
-        if (c != 0) return c;
-
-        Console.WriteLine($"[PAYKIT EntraDataValidade] {l}");
+        Debug.WriteLine($"[PAYKIT EntraDataValidade] {l}");
         return 0;
     }
-    public int EntraData(string l, ref string s) { Console.WriteLine($"[PAYKIT EntraData] {l}"); return 0; }
+    public int EntraData(string l, ref string s) { Debug.WriteLine($"[PAYKIT EntraData] {l}"); return 0; }
     public int EntraCodigoSeguranca(string l, ref string s, int t)
     {
-        int c = VerificaCancelado(nameof(EntraCodigoSeguranca));
-        if (c != 0) return c;
-
-        Console.WriteLine($"[PAYKIT EntraCVV] {l}");
+        Debug.WriteLine($"[PAYKIT EntraCVV] {l}");
         return 0;
     }
 
     public int SelecionaOpcao(string l, string o, ref int sel)
     {
-        int c = VerificaCancelado(nameof(SelecionaOpcao));
-        if (c != 0) return c;
-
-        Console.WriteLine($"[PAYKIT SelecionaOpcao] {l}");
+        Debug.WriteLine($"[PAYKIT SelecionaOpcao] {l}");
         sel = 0;
         return 0;
     }
-    public int EntraValor(string l, ref decimal v, decimal min, decimal max) { Console.WriteLine($"[PAYKIT EntraValor] {l}"); return 0; }
-    public int EntraValorEspecial(string l, ref decimal v, decimal min, decimal max, int c) { Console.WriteLine($"[PAYKIT EntraValorEspecial] {l}"); return 0; }
-    public int EntraNumero(string l, ref string s, int a, int b, int c, int d, int e) { Console.WriteLine($"[PAYKIT EntraNumero] {l}"); return 0; }
-    public int EntraString(string l, ref string s, string t) { Console.WriteLine($"[PAYKIT EntraString] {l}"); return 0; }
-    public int EntraCodigoBarras(string l, ref string s) { Console.WriteLine($"[PAYKIT EntraBarras] {l}"); return 0; }
-    public int EntraCodigoBarrasLido(string l, ref string s) { Console.WriteLine($"[PAYKIT EntraBarrasLido] {l}"); return 0; }
+    public int EntraValor(string l, ref decimal v, decimal min, decimal max) { Debug.WriteLine($"[PAYKIT EntraValor] {l}"); return 0; }
+    public int EntraValorEspecial(string l, ref decimal v, decimal min, decimal max, int c) { Debug.WriteLine($"[PAYKIT EntraValorEspecial] {l}"); return 0; }
+    public int EntraNumero(string l, ref string s, int a, int b, int c, int d, int e) { Debug.WriteLine($"[PAYKIT EntraNumero] {l}"); return 0; }
+    public int EntraString(string l, ref string s, string t) { Debug.WriteLine($"[PAYKIT EntraString] {l}"); return 0; }
+    public int EntraCodigoBarras(string l, ref string s) { Debug.WriteLine($"[PAYKIT EntraBarras] {l}"); return 0; }
+    public int EntraCodigoBarrasLido(string l, ref string s) { Debug.WriteLine($"[PAYKIT EntraBarrasLido] {l}"); return 0; }
 
     // Planos
     public int SelecionaPlanosEx(string sol, ref string ret)
     {
-        Console.WriteLine($"[PAYKIT SelecionaPlanosEx] {sol}");
+        Debug.WriteLine($"[PAYKIT SelecionaPlanosEx] {sol}");
         ret = sol; // devolve o mesmo formato sem alterar — o Paykit usará o padrão
         return 0;
     }
@@ -186,7 +193,7 @@ public sealed class GerenciadorTotem : IGerenciadorSemTelas
         if (entrada.StartsWith("001"))
         {
             string qr = entrada.Length > 9 ? entrada[9..] : "";
-            Console.WriteLine($"[PAYKIT QRCode] {qr}");
+            Debug.WriteLine($"[PAYKIT QRCode] {qr}");
             Send("qrcode", qr);
             retorno = "0";
             return 0;

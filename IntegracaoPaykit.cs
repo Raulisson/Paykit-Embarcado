@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -67,6 +68,14 @@ public sealed class IntegracaoPaykit : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate void Del_VersaoDPOS(StringBuilder versao);
 
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+        private delegate int Del_TransacaoCancelamentoPagamentoCompleta(
+        StringBuilder pValorTransacao,
+        StringBuilder pNumeroCupomVenda,
+        StringBuilder pNumeroControle,
+        StringBuilder pPermiteAlteracao,
+        StringBuilder pReservado
+    );
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Del_ConfiguraComunicacao(StringBuilder config);
 
@@ -837,6 +846,43 @@ public sealed class IntegracaoPaykit : IDisposable
         MaybeUnload();
         Console.WriteLine($"[Paykit] BuscaCertificado → {r} | path: {pathCert}");
         return r;
+    }
+
+    /// Cancela (estorna) uma transação já confirmada e finalizada
+    public int CancelarTransacaoAprovada(decimal valor, int cupom, int controle, out int controleCancelamento)
+    {
+        controleCancelamento = 0;
+        EnsureLoaded();
+
+        long valorCentavos = (long)Math.Round(valor * 100);
+        var sbValor = new StringBuilder(valorCentavos.ToString().PadLeft(12, '0'), 13);
+
+        var sbCupom = new StringBuilder(cupom.ToString().PadLeft(6, '0'), 7);
+
+        var sbControle = new StringBuilder(controle.ToString().PadLeft(6, '0'), 7);
+
+        var sbPermiteAlteracao = new StringBuilder("N", 2);
+
+        string dataAtual = DateTime.Now.ToString("yyyyMMdd");
+        string dadosReservado = $"0{dataAtual}".PadRight(158, ' ');
+        var sbReservado = new StringBuilder(dadosReservado, 159);
+
+        Debug.WriteLine($"[PAYKIT] Chamando TransacaoCancelamentoPagamentoCompleta -> Valor: {sbValor}, NSU: {sbControle}, Data: {dataAtual}");
+
+        int resultado = Fn<Del_TransacaoCancelamentoPagamentoCompleta>("TransacaoCancelamentoPagamentoCompleta")(
+            sbValor, sbCupom, sbControle, sbPermiteAlteracao, sbReservado
+        );
+
+        if (resultado == 0)
+        {
+            if (int.TryParse(sbControle.ToString(), out int novoCtrl))
+            {
+                controleCancelamento = novoCtrl;
+            }
+        }
+
+        MaybeUnload();
+        return resultado;
     }
 
     // IDisposable

@@ -15,6 +15,12 @@ public partial class MainForm : Form
     private IntegracaoPaykit _tef = null!;
     private GerenciadorTotem _ger = null!;
     private int _cupom = 1;
+    private int _controleAtivo = 0;   // NSU da transação em andamento
+    private int _ultimoControle = 0;   // NSU da última transação aprovada (para desfazimento manual)
+    private System.Threading.CancellationTokenSource? _cancelTokenSource = null;
+    private decimal _ultimoValor = 0m;
+    private int _ultimoCupom = 0;
+    private bool _transacaoEmAndamento = false;
 
     public MainForm() => InitializeComponent();
 
@@ -175,6 +181,16 @@ public partial class MainForm : Form
                 case "pix":
                     await ProcessarPagamento(msg.Valor ?? 0m, "pix");
                     break;
+                case "cancelar":
+                    await CancelarTransacaoAtiva();
+                    break;
+
+                case "desfazer":
+                    await DesfazerTransacaoEmAndamento();
+                    break;
+                case "cancelar_aprovada":
+                    await CancelarUltimaAprovada();
+                    break;
                 default:
                     await ExecJs($"window.receberResultado({{status:'erro',mensagem:'Ação desconhecida: {msg.Acao}'}})");
                     break;
@@ -197,11 +213,21 @@ public partial class MainForm : Form
         }
 
         int cupom = _cupom++;
+        _cancelTokenSource = new System.Threading.CancellationTokenSource();
+        var cancelToken = _cancelTokenSource.Token;
 
         await ExecJs($"window.receberResultado({{status:'processando'," +
                      $"mensagem:'Iniciando {tipo} de R$ {valor:F2}. Use o pinpad...'}})");
 
-        var (res, ctrl) = await Task.Run(() =>
+        // Notifica o JS que pode exibir botão de cancelar
+        await ExecJs("window.receberResultado({status:'aguardando_cartao',mensagem:'Aguardando cartão...'})");
+
+        // Timeout de 2 minutos
+        var timeoutTask = Task.Delay(TimeSpan.FromMinutes(2), cancelToken);
+
+        _transacaoEmAndamento = true;
+        // Transação em background
+        var transacaoTask = Task.Run(() =>
         {
             int c = 0;
             int r = tipo switch
@@ -212,17 +238,45 @@ public partial class MainForm : Form
                 _ => throw new Exception($"Tipo desconhecido: {tipo}")
             };
             return (r, c);
+        }, cancelToken);
+
+        // Dispara o timeout em paralelo
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await timeoutTask;
+                if (!transacaoTask.IsCompleted)
+                {
+                    Console.WriteLine("[Paykit] Timeout de 2 minutos atingido. Cancelando...");
+                    _ger.MarcarCancelado();
+                }
+            }
+            catch (TaskCanceledException) { /* transação terminou antes do timeout */ }
         });
+
+        // Aguarda a transação terminar
+        var (res, ctrl) = await transacaoTask;
+
+        // Cancela o timeout se ainda estiver rodando
+        _cancelTokenSource.Cancel();
+        _ger.LimparCancelamento();
+        _controleAtivo = ctrl;
 
         Console.WriteLine($"[Paykit] Transação resultado={res} controle={ctrl}");
 
+        // Notifica JS que o botão de cancelar pode ser removido
+        await ExecJs("window.receberResultado({status:'processando',mensagem:'Processando resposta...'})");
+
         if (res == 0)
         {
-            // APROVADO
+            _ultimoControle = ctrl; // guarda para eventual desfazimento manual
+            _ultimoValor = valor;
+            _ultimoCupom = cupom;
             await Task.Run(() =>
             {
-                _tef.ConfirmaCartao(ctrl);   // confirmar com a instituição financeira
-                _tef.FinalizaTransacao();     // encerrar ciclo
+                _tef.ConfirmaCartao(ctrl);
+                _tef.FinalizaTransacao();
             });
 
             var (comp, _) = _tef.ObtemComprovante(ctrl);
@@ -236,19 +290,24 @@ public partial class MainForm : Form
         }
         else
         {
-            // RECUSADO ou ERRO
+            _ultimoControle = 0; // limpa — não houve aprovação
             var erro = _tef.ObtemUltimoErro();
 
             await Task.Run(() =>
             {
-                _tef.DesfazCartao(ctrl);     // desfazer junto à instituição financeira
-                _tef.FinalizaTransacao();    // encerrar ciclo
+                _tef.DesfazCartao(ctrl);
+                _tef.FinalizaTransacao();
             });
 
-            await ExecJs($"window.receberResultado({{" +
-                         $"status:'recusado'," +
-                         $"mensagem:'Recusado (código {res}). {Esc(erro)}'}})");
+            // Distingue cancelamento manual de recusa real
+            string motivo = _ger.OperacaoCancelada() == 1 || erro.Contains("cancel", StringComparison.OrdinalIgnoreCase)
+                ? "Operação cancelada."
+                : $"Recusado (código {res}). {Esc(erro)}";
+
+            await ExecJs($"window.receberResultado({{status:'recusado',mensagem:'{motivo}'}})");
         }
+        _transacaoEmAndamento = false;
+        _controleAtivo = 0;
     }
 
     // Helpers
@@ -256,6 +315,82 @@ public partial class MainForm : Form
     {
         Console.WriteLine($"[C#→JS] {js[..Math.Min(js.Length, 120)]}");
         return _wv.CoreWebView2.ExecuteScriptAsync(js);
+    }
+    /// <summary>
+    /// Cancela a transação em andamento sinalizando ao Paykit via OperacaoCancelada.
+    /// </summary>
+    private async Task CancelarTransacaoAtiva()
+    {
+        if (_tef == null || _controleAtivo == 0 && _ger == null)
+        {
+            await ExecJs("window.receberResultado({status:'erro',mensagem:'Nenhuma transação ativa para cancelar.'})");
+            return;
+        }
+
+        Console.WriteLine("[MainForm] Cancelamento solicitado pelo operador.");
+        _ger.MarcarCancelado();
+
+        await ExecJs("window.receberResultado({status:'processando',mensagem:'Cancelando operação...'})");
+    }
+
+    /// Desfaz a transação em andamento (pinpad aguardando ou aprovada no ciclo atual).
+    private async Task DesfazerTransacaoEmAndamento()
+    {
+        if (_tef == null) return;
+
+        if (_transacaoEmAndamento)
+        {
+            // Ainda aguardando o pinpad — sinaliza cancelamento
+            Console.WriteLine("[MainForm] Desfazimento: sinalizando cancelamento ao Paykit.");
+            _ger.MarcarCancelado();
+            await ExecJs("window.receberResultado({status:'processando',mensagem:'Cancelando operação no pinpad...'})");
+            // O ProcessarPagamento vai perceber o retorno 11 e chamar DesfazCartao + FinalizaTransacao
+            return;
+        }
+
+        // Não há transação ativa no momento
+        await ExecJs("window.receberResultado({status:'erro',mensagem:'Nenhuma transação em andamento para desfazer.'})");
+    }
+
+    /// Cancela (estorna) a última transação já confirmada e finalizada.
+    private async Task CancelarUltimaAprovada()
+    {
+        if (_tef == null)
+        {
+            await ExecJs("window.receberResultado({status:'erro',mensagem:'Paykit não inicializado.'})");
+            return;
+        }
+        if (_ultimoControle == 0)
+        {
+            await ExecJs("window.receberResultado({status:'erro',mensagem:'Nenhuma transação aprovada disponível para cancelamento.'})");
+            return;
+        }
+
+        int ctrl = _ultimoControle;
+        decimal val = _ultimoValor;
+        int cupom = _ultimoCupom;
+        _ultimoControle = 0; // limpa imediatamente para evitar duplo cancelamento
+
+        Console.WriteLine($"[MainForm] Cancelamento (estorno) solicitado. NSU: {ctrl}");
+        await ExecJs($"window.receberResultado({{status:'processando',mensagem:'Cancelando transação NSU {ctrl}...'}})");
+
+        var (res, ctrlCancel) = await Task.Run(() =>
+        {
+            int c = 0;
+            int r = _tef.CancelarTransacaoAprovada(val, cupom, ctrl, out c);
+            if (r == 0) _tef.ConfirmaCartao(c);
+            else _tef.DesfazCartao(c);
+            _tef.FinalizaTransacao();
+            return (r, c);
+        });
+
+        if (res == 0)
+            await ExecJs($"window.receberResultado({{status:'aprovado',mensagem:'Cancelamento do NSU {ctrl} realizado. NSU estorno: {ctrlCancel}'}})");
+        else
+        {
+            var erro = _tef.ObtemUltimoErro();
+            await ExecJs($"window.receberResultado({{status:'erro',mensagem:'Falha ao cancelar NSU {ctrl}. {Esc(erro)}'}})");
+        }
     }
 
     private static string Esc(string s) =>

@@ -196,7 +196,9 @@
     <div class="card">
         <h2>Pedido de Teste</h2>
         <div class="row"><span>Descrição</span><span id="desc">—</span></div>
-        <div class="row"><span>Cupom</span><span>Próximo da sessão</span></div>
+        <div class="row"><span>
+             
+             </span><span>Próximo da sessão</span></div>
         <div class="valor" id="val">R$ —</div>
         <div class="btns" style="margin-bottom:16px">
             <button class="bsts" onclick="alterarValor(1.5)">R$ 1,50</button>
@@ -207,6 +209,16 @@
             <button class="bdeb" onclick="pagar('debito')"> Débito</button>
             <button class="bpix" onclick="pagar('pix')"> PIX</button>
             <button class="bsts" onclick="pagar('status')"> Status</button>
+        </div>
+        <div class="btns" style="margin-top:10px">
+            <button id="btnDesfazer" class="bsts" style="background:#ef4444;color:#fff"
+                    onclick="desfazerTransacao()">
+                ✕ Desfazer em andamento
+            </button>
+            <button id="btnCancelarAprovada" class="bsts" style="background:#f59e0b;color:#fff"
+                    onclick="cancelarAprovada()">
+                ↩ Cancelar última aprovada
+            </button>
         </div>
     </div>
 
@@ -229,8 +241,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
     const PEDIDO = {
-    descricao: 'Combo de Lanche - Teste',
-    valor: 5.9,   // ← ALTERE AQUI
+        descricao: 'Combo de Lanche - Teste',
+        valor: 5.9,   // ← ALTERE AQUI
     };
 
     // ── Inicialização ────────────────────────────────────────
@@ -249,26 +261,34 @@
 
     // ── Helpers ──────────────────────────────────────────────
     function addLog(tag, cls, txt) {
-    const b = document.getElementById('log');
-    const d = document.createElement('div');
-    d.innerHTML = `<span class="tag ${cls}">${tag}</span>${txt}`;
-    b.appendChild(d);
-    b.scrollTop = b.scrollHeight;
+        const b = document.getElementById('log');
+        const d = document.createElement('div');
+        d.innerHTML = `<span class="tag ${cls}">${tag}</span>${txt}`;
+        b.appendChild(d);
+        b.scrollTop = b.scrollHeight;
     }
+
     function setStatus(txt, cor) {
-    const el = document.getElementById('statusTxt');
-    el.textContent = txt;
-    el.style.color = cor || '#f1f5f9';
+        const el = document.getElementById('statusTxt');
+        el.textContent = txt;
+        el.style.color = cor || '#f1f5f9';
     }
+
     function setBtns(dis) {
-    document.querySelectorAll('button').forEach(b => b.disabled = dis);
+        document.querySelectorAll('button').forEach(b => b.disabled = dis);
+    }
+
+    function reabilitarBtns() {
+        document.querySelectorAll('.bcred, .bdeb, .bpix, .bsts').forEach(b => b.disabled = false);
+        document.getElementById('btnCancelar').style.display = 'none';
     }
 
     // ── Envio ao C# ─────────────────────────────────────────
     function pagar(acao) {
         document.getElementById('qrcodeBox').style.display = 'none';
         if (acao !== 'status') {
-            setBtns(true);
+            // Desabilita apenas os botões de pagamento, não o de cancelar
+            //document.querySelectorAll('.bcred, .bdeb, .bpix, .bsts').forEach(b => b.disabled = true);
             document.getElementById('comprovante').style.display = 'none';
             setStatus(`⏳ Iniciando ${acao}...`, '#38bdf8');
         }
@@ -277,53 +297,83 @@
         window.enviarAoPaykit(payload);
     }
 
-    // ── Resultado final vindo do C# ──────────────────────────
-    window._resultadoHandler = function(d) {
-    switch (d.status) {
-        case 'aprovado':
-        setStatus('✅ ' + d.mensagem, '#4ade80');
-        addLog('APROVADO', 't-ok', d.mensagem);
-        setBtns(false);
-        break;
-        case 'recusado':
-        setStatus('❌ ' + d.mensagem, '#f87171');
-        addLog('RECUSADO', 't-er', d.mensagem);
-        setBtns(false);
-        break;
-        case 'processando':
-        setStatus('⏳ ' + d.mensagem, '#38bdf8');
-        addLog('PROCESSO', 't-pr', d.mensagem);
-        break;
-        case 'erro':
-        setStatus('⚠️ ' + d.mensagem, '#fb923c');
-        addLog('ERRO', 't-er', d.mensagem);
-        setBtns(false);
-        break;
-        default:
-        addLog('INFO', 't-js', d.mensagem);
+    function desfazerTransacao() {
+        addLog('JS→C#', 't-js', 'Desfazimento de transação em andamento.');
+        window.enviarAoPaykit(JSON.stringify({ acao: 'cancelar' }));
     }
-    };
 
+    function cancelarAprovada() {
+        addLog('JS→C#', 't-js', 'Cancelamento (estorno) da última aprovada.');
+        setBtns(true);
+        setStatus('⏳ Cancelando transação aprovada...', '#f59e0b');
+        window.enviarAoPaykit(JSON.stringify({ acao: 'cancelar_aprovada' }));
+    }
+    
+    // ── Resultado final vindo do C# ──────────────────────────
+   window._resultadoHandler = function(d) {
+        // Busca o botão de desfazer com segurança pelo ID correto (btnDesfazer)
+        const btnDesfazer = document.getElementById('btnDesfazer');
+
+        switch (d.status) {
+            case 'aprovado':
+                setStatus('✅ ' + d.mensagem, '#4ade80');
+                if (btnDesfazer) btnDesfazer.style.display = 'none';
+                addLog('APROVADO', 't-ok', d.mensagem);
+                setBtns(false); 
+            break;
+            case 'recusado':
+                setStatus('❌ ' + d.mensagem, '#f87171');
+                if (btnDesfazer) btnDesfazer.style.display = 'none';
+                addLog('RECUSADO', 't-er', d.mensagem);
+                setBtns(false);
+            break;
+            case 'processando':
+                setStatus('⏳ ' + d.mensagem, '#38bdf8');
+                addLog('PROCESSO', 't-pr', d.mensagem);
+            break;
+            case 'erro':
+                setStatus('⚠️ ' + d.mensagem, '#fb923c');
+                addLog('ERRO', 't-er', d.mensagem);
+                setBtns(false);
+            break;
+            case 'aguardando_cartao':
+                if (btnDesfazer) btnDesfazer.style.display = 'inline-block';
+                addLog('SYS', 't-js', 'Aguardando cartão — cancelamento disponível.');
+                break;
+            default:
+                addLog('INFO', 't-js', d.mensagem);
+        }
+    };
     // ── Comprovante ──────────────────────────────────────────
     window._comprovanteHandler = function(txt) {
-    const el = document.getElementById('comprovante');
-    el.style.display = 'block';
-    el.textContent   = txt || '(sem comprovante)';
+        const el = document.getElementById('comprovante');
+        el.style.display = 'block';
+        el.textContent   = txt || '(sem comprovante)';
     };
 
     // ── Eventos do Paykit em tempo real ──────────────────────
     window._paykitHandler = function(tipo, dados) {
     switch (tipo) {
-        case 'display':   setStatus('📟 ' + dados, '#e2e8f0'); addLog('PAYKIT', 't-pk', dados); break;
+        case 'display':   
+            setStatus('📟 ' + dados, '#e2e8f0'); 
+            addLog('PAYKIT', 't-pk', dados); 
+            
+            // SE O VISOR INFORMAR QUE A TRANSAÇÃO FOI APROVADA (OU SEJA, CANCELAMENTO CONCLUÍDO)
+            if (dados.trim() === "Transação Aprovada") {
+                setStatus('✅ Operação Concluída!', '#4ade80');
+                setBtns(false); // Libera os botões para o próximo cliente usar o totem!
+            }
+            break;
+            
         case 'mensagem':  addLog('PAYKIT', 't-pk', dados); break;
-        case 'erro':      addLog('ERRO',   't-er', dados); break;
+        case 'erro':      addLog('ERRO',   't-er', dados); setBtns(false); break; // Garante liberação em caso de erro
         case 'alerta':    addLog('ALERTA', 't-pk', dados); break;
         case 'confirmacao': addLog('CONFIRM', 't-pk', 'Auto: ' + dados); break;
         case 'comprovante': window._comprovanteHandler(dados); break;
         case 'qrcode':    addLog('QRCODE', 't-pk', dados); break;
         default:          addLog(tipo,     't-pk', dados);
     }
-    };
+};
 
     addLog('SYS', 't-js', 'Página pronta.');
 </script>
