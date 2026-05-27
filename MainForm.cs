@@ -294,12 +294,26 @@ public partial class MainForm : Form
         {
             Console.WriteLine($"[Paykit] Falha ao invocar ObtemLogTransacaoJson: {ex.Message}");
         }
+        //
+
         if (res == 0)
         {
-            _ultimoControle = ctrl; // guarda para eventual desfazimento manual
+            _ultimoControle = ctrl;
             _ultimoValor = valor;
             _ultimoCupom = cupom;
 
+            // Captura o texto do comprovante completo direto da DLL
+            var (comp, _) = _tef.ObtemComprovante(ctrl);
+
+            if (!string.IsNullOrWhiteSpace(comp))
+            {
+                // Envia para o HTML exibir na tela do Totem (as duas vias juntas)
+                await ExecJs($"window._comprovanteHandler('{Esc(comp)}')");
+
+                try
+                {
+                    string pastaCupons = Path.Combine(AppContext.BaseDirectory, "bin", "Cupons");
+                    string pastaInterno = Path.Combine(AppContext.BaseDirectory, "bin", "Interno");
                     Directory.CreateDirectory(pastaCupons);
                     Directory.CreateDirectory(pastaInterno);
 
@@ -307,9 +321,14 @@ public partial class MainForm : Form
 
                     int indexNsu = comp.IndexOf("NSU D-TEF", StringComparison.OrdinalIgnoreCase);
 
+                    if (indexNsu > 0)
+                    {
                         int indexFechaParentese = comp.IndexOf(")", indexNsu);
 
                         if (indexFechaParentese > 0)
+                        {
+                            int pontoDeCorte = indexFechaParentese + 1;
+
                             //Separa as vias
                             string viaCliente = comp.Substring(0, pontoDeCorte).TrimEnd();
                             string viaEstabelecimento = comp.Substring(pontoDeCorte).TrimStart();
@@ -317,6 +336,10 @@ public partial class MainForm : Form
                             //Salva cada uma no seu respectivo diretório
                             File.WriteAllText(Path.Combine(pastaCupons, $"Via_Cliente_{ctrl}.txt"), viaCliente, encodingAnsi);
                             File.WriteAllText(Path.Combine(pastaInterno, $"Via_Loja_{ctrl}.txt"), viaEstabelecimento, encodingAnsi);
+
+                            Debug.WriteLine("[MainForm] Sucesso! Vias fatiadas usando o fechamento do NSU D-TEF.");
+                        }
+                    }
                     else
                     {
                         // Fallback de segurança: se o layout mudar drasticamente, salva o arquivo inteiro em ambos
