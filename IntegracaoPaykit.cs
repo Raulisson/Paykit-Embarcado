@@ -76,6 +76,10 @@ public sealed class IntegracaoPaykit : IDisposable
         StringBuilder pPermiteAlteracao,
         StringBuilder pReservado
     );
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+    private delegate int Del_TransacaoCancelamentoPagamento(StringBuilder pNumeroControle);
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Del_ConfiguraComunicacao(StringBuilder config);
 
@@ -148,12 +152,14 @@ public sealed class IntegracaoPaykit : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Del_ObtemUltimoErro(byte[] erro);
 
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate void Del_ObtemComprovante(StringBuilder controle, byte[] comp, byte[] compRed);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)]
+    private delegate void Del_ObtemComprovante(string pNumeroControle, StringBuilder pCupomCompleto, StringBuilder pCupomReduzido);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Del_ProcuraPinPad(byte[] dados);
 
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate IntPtr Del_ObtemLogTransacaoJson(StringBuilder pNumeroControle);
     #endregion
 
     #region ── Delegates de callbacks "sem telas" ─────────────────────────────
@@ -799,18 +805,63 @@ public sealed class IntegracaoPaykit : IDisposable
         return string.IsNullOrEmpty(erro) ? "Nenhum erro detalhado pela DLL." : erro;
     }
 
+    public string ObtemLogTransacaoJson(int? controle = null)
+    {
+        EnsureLoaded();
+        try
+        {
+            // Se passar o NSU (controle), formata com 6 dígitos. Se não passar, manda StringBuilder vazio (ponteiro nulo/vazio)
+            StringBuilder sbControle = controle.HasValue 
+                ? new StringBuilder(FmtInt(6, controle.Value)) 
+                : new StringBuilder("");
+
+            IntPtr ptrJson = Fn<Del_ObtemLogTransacaoJson>("ObtemLogTransacaoJson")(sbControle);
+
+            if (ptrJson == IntPtr.Zero)
+                return string.Empty;
+
+            string jsonResult = Marshal.PtrToStringAnsi(ptrJson) ?? string.Empty;
+        
+            return jsonResult;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Paykit] Erro ao chamar ObtemLogTransacaoJson: {ex.Message}");
+            return string.Empty;
+        }
+        finally
+        {
+            MaybeUnload();
+        }
+}
     public (string completo, string reduzido) ObtemComprovante(int controle)
     {
         EnsureLoaded();
-        var comp = new byte[2048];
-        var red = new byte[320];
-        Fn<Del_ObtemComprovante>("ObtemComprovanteTransacao")(
-            new StringBuilder(FmtInt(6, controle)), comp, red);
-        MaybeUnload();
-        return (
-            Encoding.ASCII.GetString(comp).TrimEnd('\0', ' '),
-            Encoding.ASCII.GetString(red).TrimEnd('\0', ' ')
-        );
+        try
+        {
+            StringBuilder sbCompleto = new StringBuilder(8192);
+            StringBuilder sbReduzido = new StringBuilder(1024);
+
+            string ctrlFormatado = FmtInt(6, controle);
+
+            // Invoca a função nativa da DLL
+            Fn<Del_ObtemComprovante>("ObtemComprovanteTransacao")(ctrlFormatado, sbCompleto, sbReduzido);
+
+            // Converte o conteúdo capturado para String limpando espaços em branco nas pontas
+            string completo = sbCompleto.ToString().Trim();
+            string reduzido = sbReduzido.ToString().Trim();
+
+            return (completo, reduzido);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[Paykit] Erro ao obter comprovante da memória: {ex.Message}");
+            return (string.Empty, string.Empty);
+        }
+        finally
+        {
+            MaybeUnload();
+        }
     }
 
     public string ProcuraPinPad()
@@ -876,6 +927,45 @@ public sealed class IntegracaoPaykit : IDisposable
         if (resultado == 0)
         {
             if (int.TryParse(sbControle.ToString(), out int novoCtrl))
+            {
+                controleCancelamento = novoCtrl;
+            }
+        }
+
+        MaybeUnload();
+        return resultado;
+    }
+
+    /// Executa o cancelamento/estorno utilizando a função Completa, mas configurada com permissão de alteração ("S")
+    /// para que o Pinpad busque dinamicamente a transação correta com base no cartão inserido
+    public int CancelarTransacaoPorCartaoCompleta(decimal valor, int cupom, int controleOriginal, out int controleCancelamento)
+    {
+        controleCancelamento = 0;
+        EnsureLoaded();
+
+        long valorCentavos = (long)Math.Round(valor * 100);
+        var sbValor = new StringBuilder(valorCentavos.ToString().PadLeft(12, '0'), 13);
+
+        var sbCupom = new StringBuilder(cupom.ToString().PadLeft(6, '0'), 7);
+
+        var sbControle = new StringBuilder(controleOriginal.ToString().PadLeft(6, '0'), 12);
+
+        var sbPermiteAlteracao = new StringBuilder("S", 2);
+
+        string dataAtual = DateTime.Now.ToString("yyyyMMdd");
+        string dadosReservado = $"0{dataAtual}".PadRight(158, ' ');
+        var sbReservado = new StringBuilder(dadosReservado, 159);
+
+        Debug.WriteLine($"[PAYKIT] Chamando TransacaoCancelamentoPagamentoCompleta Flexível -> Valor Sugerido: {sbValor}, NSU Sugerido: {sbControle}");
+
+        // Invoca a função robusta mapeada da DLL
+        int resultado = Fn<Del_TransacaoCancelamentoPagamentoCompleta>("TransacaoCancelamentoPagamentoCompleta")(
+            sbValor, sbCupom, sbControle, sbPermiteAlteracao, sbReservado
+        );
+
+        if (resultado == 0)
+        {
+            if (int.TryParse(sbControle.ToString().Trim(), out int novoCtrl))
             {
                 controleCancelamento = novoCtrl;
             }

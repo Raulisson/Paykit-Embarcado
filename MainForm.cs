@@ -3,6 +3,7 @@ using Microsoft.Web.WebView2.WinForms;
 using PaykitTotem.Paykit;
 using System;
 using System.IO;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -81,7 +82,7 @@ public partial class MainForm : Form
         var html = Path.Combine(AppContext.BaseDirectory, "wwwroot", "index.html");
         _wv.CoreWebView2.Navigate("file:///" + html.Replace('\\', '/'));
 
-        Console.WriteLine("[WebView2] Pronto.");
+        Debug.WriteLine("[WebView2] Pronto.");
     }
 
     // Paykit
@@ -120,23 +121,23 @@ public partial class MainForm : Form
             _tef.ConfigurarCNPJ("70895669000174");
             _tef.ConfigurarEmpresaLojaPDV(empresa: 1, loja: 558, pdv: 1);
             int rComm = _tef.ConfigurarComunicacao("tef-stlb01.linxsaas.com.br:8778:1");
-            Console.WriteLine($"[Paykit] ConfigurarComunicacao → {rComm}");
+            Debug.WriteLine($"[Paykit] ConfigurarComunicacao → {rComm}");
 
             //Baixar certificado
             var certPath = Path.Combine(AppContext.BaseDirectory, "Bin", "certLinx.pem");
             int rCert = _tef.BuscarCertificado(null, certPath);
-            Console.WriteLine($"[Paykit] BuscarCertificado → {rCert} | {certPath}");
+            Debug.WriteLine($"[Paykit] BuscarCertificado → {rCert} | {certPath}");
 
             if (rCert != 0)
-                Console.WriteLine("[Paykit] AVISO: falha ao baixar certificado. " +
+                Debug.WriteLine("[Paykit] AVISO: falha ao baixar certificado. " +
                                   "Se já existir um na pasta Bin/, pode continuar.");
 
             var ver = _tef.VersaoDPOS();
-            Console.WriteLine($"[Paykit] Versão DLL: {ver}");
+            Debug.WriteLine($"[Paykit] Versão DLL: {ver}");
 
             // Abrir dia de movimento
             int r = _tef.InicializaDPOS();
-            Console.WriteLine($"[Paykit] InicializaDPOS → {r}");
+            Debug.WriteLine($"[Paykit] InicializaDPOS → {r}");
 
             if (r != 0)
                 MessageBox.Show(
@@ -159,7 +160,7 @@ public partial class MainForm : Form
     private async void OnJsMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         var json = e.TryGetWebMessageAsString();
-        Console.WriteLine($"[JS→C#] {json}");
+        Debug.WriteLine($"[JS→C#] {json}");
 
         try
         {
@@ -189,7 +190,7 @@ public partial class MainForm : Form
                     await DesfazerTransacaoEmAndamento();
                     break;
                 case "cancelar_aprovada":
-                    await CancelarUltimaAprovada();
+                    await CancelarTransacaoPorCartao();
                     break;
                 default:
                     await ExecJs($"window.receberResultado({{status:'erro',mensagem:'Ação desconhecida: {msg.Acao}'}})");
@@ -198,7 +199,7 @@ public partial class MainForm : Form
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERRO OnJsMessage] {ex}");
+            Debug.WriteLine($"[ERRO OnJsMessage] {ex}");
             await ExecJs($"window.receberResultado({{status:'erro',mensagem:'{Esc(ex.Message)}'}})");
         }
     }
@@ -209,6 +210,14 @@ public partial class MainForm : Form
         if (_tef == null)
         {
             await ExecJs("window.receberResultado({status:'erro',mensagem:'Paykit não inicializado.'})");
+            return;
+        }
+
+        // Validação exigida pela SEFAZ para vendas acima de 10.000,00 sem identificação do consumidor.
+        // Bloqueia o avanço para o Pinpad para evitar cobrança sem identificação fiscal
+        if (valor >= 10000.00m)
+        {
+            await ExecJs("window.receberResultado({status:'erro',mensagem:'Valor limite excedido. Vendas a partir de R$ 10.000,00 exigem identificação do consumidor no caixa.'})");
             return;
         }
 
@@ -268,25 +277,70 @@ public partial class MainForm : Form
         // Notifica JS que o botão de cancelar pode ser removido
         await ExecJs("window.receberResultado({status:'processando',mensagem:'Processando resposta...'})");
 
+        //  CAPTURA DO LOG JSON DO PAYKIT 
+        string logJson = string.Empty;
+        try
+        {
+            // Passa o controle (int) direto.
+            logJson = _tef.ObtemLogTransacaoJson(ctrl);
+
+            // Se falhar com o NSU, tenta buscar passando null (última transação geral)
+            if (string.IsNullOrWhiteSpace(logJson))
+            {
+                logJson = _tef.ObtemLogTransacaoJson(null);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Paykit] Falha ao invocar ObtemLogTransacaoJson: {ex.Message}");
+        }
         if (res == 0)
         {
             _ultimoControle = ctrl; // guarda para eventual desfazimento manual
             _ultimoValor = valor;
             _ultimoCupom = cupom;
+
+                    Directory.CreateDirectory(pastaCupons);
+                    Directory.CreateDirectory(pastaInterno);
+
+                    var encodingAnsi = System.Text.Encoding.GetEncoding("Windows-1252");
+
+                    int indexNsu = comp.IndexOf("NSU D-TEF", StringComparison.OrdinalIgnoreCase);
+
+                        int indexFechaParentese = comp.IndexOf(")", indexNsu);
+
+                        if (indexFechaParentese > 0)
+                            //Separa as vias
+                            string viaCliente = comp.Substring(0, pontoDeCorte).TrimEnd();
+                            string viaEstabelecimento = comp.Substring(pontoDeCorte).TrimStart();
+
+                            //Salva cada uma no seu respectivo diretório
+                            File.WriteAllText(Path.Combine(pastaCupons, $"Via_Cliente_{ctrl}.txt"), viaCliente, encodingAnsi);
+                            File.WriteAllText(Path.Combine(pastaInterno, $"Via_Loja_{ctrl}.txt"), viaEstabelecimento, encodingAnsi);
+                    else
+                    {
+                        // Fallback de segurança: se o layout mudar drasticamente, salva o arquivo inteiro em ambos
+                        File.WriteAllText(Path.Combine(pastaCupons, $"Cupom_{ctrl}.txt"), comp, encodingAnsi);
+                        File.WriteAllText(Path.Combine(pastaInterno, $"Cupom_{ctrl}.txt"), comp, encodingAnsi);
+                        Debug.WriteLine("[MainForm] Alerta: Não foi possível fatiar pelo NSU. Salvo cupom completo.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Erro Salvar TXT] {ex.Message}");
+                }
+            }
+
+            // Confirma a operação
             await Task.Run(() =>
             {
                 _tef.ConfirmaCartao(ctrl);
                 _tef.FinalizaTransacao();
             });
 
-            var (comp, _) = _tef.ObtemComprovante(ctrl);
-
             await ExecJs($"window.receberResultado({{" +
                          $"status:'aprovado'," +
                          $"mensagem:'Aprovado! NSU: {ctrl} | Cupom: {cupom}'}})");
-
-            if (!string.IsNullOrWhiteSpace(comp))
-                await ExecJs($"window.receberComprovante('{Esc(comp)}')");
         }
         else
         {
@@ -298,6 +352,20 @@ public partial class MainForm : Form
                 _tef.DesfazCartao(ctrl);
                 _tef.FinalizaTransacao();
             });
+
+            // SALVANDO O LOG JSON DA TRANSAÇÃO RECUSADA/CANCELADA
+            if (!string.IsNullOrWhiteSpace(logJson))
+            {
+                try
+                {
+                    string pastaLogs = Path.Combine(AppContext.BaseDirectory, "Bin", "Cupons");
+                    Directory.CreateDirectory(pastaLogs);
+                    // Como pode não ter gerado NSU (ctrl = 0), usando o timestamp para não sobrepor
+                    string sufixo = ctrl > 0 ? ctrl.ToString() : DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                    File.WriteAllText(Path.Combine(pastaLogs, $"LogRecusado_{sufixo}.json"), logJson, System.Text.Encoding.UTF8);
+                }
+                catch (Exception ex) { Console.WriteLine($"[Erro Gravar JSON Recusado] {ex.Message}"); }
+            }
 
             // Distingue cancelamento manual de recusa real
             string motivo = _ger.OperacaoCancelada() == 1 || erro.Contains("cancel", StringComparison.OrdinalIgnoreCase)
@@ -313,12 +381,11 @@ public partial class MainForm : Form
     // Helpers
     private Task ExecJs(string js)
     {
-        Console.WriteLine($"[C#→JS] {js[..Math.Min(js.Length, 120)]}");
+        Debug.WriteLine($"[C#→JS] {js[..Math.Min(js.Length, 120)]}");
         return _wv.CoreWebView2.ExecuteScriptAsync(js);
     }
-    /// <summary>
-    /// Cancela a transação em andamento sinalizando ao Paykit via OperacaoCancelada.
-    /// </summary>
+
+    /// Cancela a transação em andamento sinalizando ao Paykit via OperacaoCancelada
     private async Task CancelarTransacaoAtiva()
     {
         if (_tef == null || _controleAtivo == 0 && _ger == null)
@@ -327,7 +394,7 @@ public partial class MainForm : Form
             return;
         }
 
-        Console.WriteLine("[MainForm] Cancelamento solicitado pelo operador.");
+        Debug.WriteLine("[MainForm] Cancelamento solicitado pelo operador.");
         _ger.MarcarCancelado();
 
         await ExecJs("window.receberResultado({status:'processando',mensagem:'Cancelando operação...'})");
@@ -341,7 +408,7 @@ public partial class MainForm : Form
         if (_transacaoEmAndamento)
         {
             // Ainda aguardando o pinpad — sinaliza cancelamento
-            Console.WriteLine("[MainForm] Desfazimento: sinalizando cancelamento ao Paykit.");
+            Debug.WriteLine("[MainForm] Desfazimento: sinalizando cancelamento ao Paykit.");
             _ger.MarcarCancelado();
             await ExecJs("window.receberResultado({status:'processando',mensagem:'Cancelando operação no pinpad...'})");
             // O ProcessarPagamento vai perceber o retorno 11 e chamar DesfazCartao + FinalizaTransacao
@@ -352,46 +419,113 @@ public partial class MainForm : Form
         await ExecJs("window.receberResultado({status:'erro',mensagem:'Nenhuma transação em andamento para desfazer.'})");
     }
 
-    /// Cancela (estorna) a última transação já confirmada e finalizada.
-    private async Task CancelarUltimaAprovada()
+
+    /// Solicita o estorno direto pelo cartão do cliente (Identificação Automática no Pinpad).
+    private async Task CancelarTransacaoPorCartao()
     {
         if (_tef == null)
         {
             await ExecJs("window.receberResultado({status:'erro',mensagem:'Paykit não inicializado.'})");
             return;
         }
-        if (_ultimoControle == 0)
+
+        // Pegamos as variáveis da última venda como sugestão para inicializar a DLL
+        int ctrlOriginal = _ultimoControle;
+        decimal valOriginal = _ultimoValor;
+        int cupomOriginal = _ultimoCupom;
+
+        // Caso o operador tente clicar sem ter histórico em memória (fallback de segurança)
+        if (ctrlOriginal == 0)
         {
-            await ExecJs("window.receberResultado({status:'erro',mensagem:'Nenhuma transação aprovada disponível para cancelamento.'})");
-            return;
+            // Valores fictícios ou genéricos padrão apenas para abrir o canal da DLL
+            ctrlOriginal = 1;
+            valOriginal = 1.00m;
+            cupomOriginal = 1;
         }
 
-        int ctrl = _ultimoControle;
-        decimal val = _ultimoValor;
-        int cupom = _ultimoCupom;
-        _ultimoControle = 0; // limpa imediatamente para evitar duplo cancelamento
+        Console.WriteLine($"[MainForm] Estorno assistido iniciado. Sugerido NSU: {ctrlOriginal}");
+        await ExecJs($"window.receberResultado({{status:'processando',mensagem:'Insira ou aproxime o cartão utilizado na compra para processar o estorno...'}})");
 
-        Console.WriteLine($"[MainForm] Cancelamento (estorno) solicitado. NSU: {ctrl}");
-        await ExecJs($"window.receberResultado({{status:'processando',mensagem:'Cancelando transação NSU {ctrl}...'}})");
+        int ctrlCancel = 0;
 
-        var (res, ctrlCancel) = await Task.Run(() =>
+        int res = await Task.Run(() =>
         {
-            int c = 0;
-            int r = _tef.CancelarTransacaoAprovada(val, cupom, ctrl, out c);
-            if (r == 0) _tef.ConfirmaCartao(c);
-            else _tef.DesfazCartao(c);
-            _tef.FinalizaTransacao();
-            return (r, c);
+            return _tef.CancelarTransacaoPorCartaoCompleta(valOriginal, cupomOriginal, ctrlOriginal, out ctrlCancel);
         });
 
         if (res == 0)
-            await ExecJs($"window.receberResultado({{status:'aprovado',mensagem:'Cancelamento do NSU {ctrl} realizado. NSU estorno: {ctrlCancel}'}})");
+        {
+            // Se a adquirente aceitou o cartão digitado/inserido e bateu com o histórico:
+            Debug.WriteLine($"[MainForm] Estorno Autorizado! Controle do Estorno: {ctrlCancel}");
+
+            var (comp, _) = _tef.ObtemComprovante(ctrlCancel);
+
+            if (!string.IsNullOrWhiteSpace(comp))
+            {
+                await ExecJs($"window._comprovanteHandler('{Esc(comp)}')");
+
+                try
+                {
+                    string pastaCupons = Path.Combine(AppContext.BaseDirectory, "bin", "Cupons");
+                    string pastaInterno = Path.Combine(AppContext.BaseDirectory, "bin", "Interno");
+                    Directory.CreateDirectory(pastaCupons);
+                    Directory.CreateDirectory(pastaInterno);
+
+                    var encodingAnsi = System.Text.Encoding.GetEncoding("Windows-1252");
+
+                    int indexNsu = comp.IndexOf("NSU D-TEF", StringComparison.OrdinalIgnoreCase);
+
+                    if (indexNsu > 0)
+                    {
+                        int indexFechaParentese = comp.IndexOf(")", indexNsu);
+
+                        if (indexFechaParentese > 0)
+                        {
+                            int pontoDeCorte = indexFechaParentese + 1;
+
+                            string viaCliente = comp.Substring(0, pontoDeCorte).TrimEnd();
+                            string viaEstabelecimento = comp.Substring(pontoDeCorte).TrimStart();
+
+                            File.WriteAllText(Path.Combine(pastaCupons, $"Via_Cliente_Estorno_{ctrlCancel}.txt"), viaCliente, encodingAnsi);
+                            File.WriteAllText(Path.Combine(pastaInterno, $"Via_Loja_Estorno_{ctrlCancel}.txt"), viaEstabelecimento, encodingAnsi);
+
+                            Debug.WriteLine($"[MainForm] Notas do estorno {ctrlCancel} geradas e fatiadas com sucesso.");
+                        }
+                    }
+                    else
+                    {
+                        File.WriteAllText(Path.Combine(pastaCupons, $"Estorno_{ctrlCancel}.txt"), comp, encodingAnsi);
+                        File.WriteAllText(Path.Combine(pastaInterno, $"Estorno_{ctrlCancel}.txt"), comp, encodingAnsi);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[Erro Salvar Cupom Estorno] {ex.Message}");
+                }
+            }
+
+            await Task.Run(() =>
+            {
+                _tef.ConfirmaCartao(ctrlCancel);
+                _tef.FinalizaTransacao();
+            });
+
+            await ExecJs($"window.receberResultado({{status:'aprovado',mensagem:'Estorno efetuado com sucesso! Código: {ctrlCancel}'}})");
+        }
         else
         {
+            // Se deu erro ou o cliente desistiu
+            await Task.Run(() =>
+            {
+                _tef.DesfazCartao(ctrlCancel);
+                _tef.FinalizaTransacao();
+            });
+
             var erro = _tef.ObtemUltimoErro();
-            await ExecJs($"window.receberResultado({{status:'erro',mensagem:'Falha ao cancelar NSU {ctrl}. {Esc(erro)}'}})");
+            await ExecJs($"window.receberResultado({{status:'erro',mensagem:'Falha no estorno. {Esc(erro)}'}})");
         }
     }
+
 
     private static string Esc(string s) =>
         s.Replace("\\", "\\\\").Replace("'", "\\'")
